@@ -1,5 +1,8 @@
 # encoding: utf-8
+import functools
 import random
+
+from .decompile import Opcodes as Ops, decompile
 
 hexcodes = list('APZLGITYEOXUKSVN')
 codes = {v:k for k,v in enumerate(hexcodes)}
@@ -89,47 +92,93 @@ def guess_safer_code(code, rom_path):
 
     return codes
 
-def guess_based_on_char(char, rom_path, write=200, harder=False, short=False):
-    rom = open(rom_path, 'rb')
-    header = _read_rom_header(rom.read(16))
-    if type(char) is not bytes:
-        char = chr(char).encode()
-
-    codes = set()
-    buffer = []
-    targets = [
-        [[b'\xa9', char, b'\x8d'], 1],     # LDA Immediate, STA Absolute
-        [[b'\xa9', char, b'\x85'], 1],     # LDA Immediate, STA Zero Page
+def guess_based_on_char(char, rom_path, write=200, harder=False, short=False, check_dec=False):
+    sta_assign = [
+        [Ops.LDA(ord(char)).tobytes() + Ops.STA_A.tobytes(), 1],
+        #[[0xA9, ord(char), 0x8D], 1],     # LDA Immediate, STA Absolute
+        [[0xA9, ord(char), 0x85], 1],     # LDA Immediate, STA Zero Page
     ]
 
-    if False and harder:
-        targets.extend([
-        [[b'\xa2', char, b'\x86'], 1],     # LDX Immediate, STX Zero Page
-        [[b'\xa0', char, b'\x84'], 1],     # LDY Immediate, STY Zero Page
-        [[b'\xa0', char, b'\x8c'], 1],     # LDY Immediate, STY Absolute
-        [[b'\xa2', char, b'\x8e'], 1],     # LDX Immediate, STX Absolute
+    dec_memory = lambda addr: [
+        [Ops.DEC_A(addr).tobytes(), 0],   # DEC absolute
+        #[bytes((0xC6, addr & 0xff)), 0],
+        #[[0x8D, (addr >> 8) & 0xff, addr & 0xff], 0],
+        [bytes([0xAE, addr & 0xff, (addr >> 8) & 0xff, 0xCA]), 0], # LDX absolute (16b), DECX
+        [bytes([0xAC, addr & 0xff, (addr >> 8) & 0xff, 0x88]), 0], # LDY absolute (16b), DECY
+        [bytes([0xAD, addr & 0xff, (addr >> 8) & 0xff, 0xE9]), 0], # LDA absolute (16b), SBC immediate
+    ]
+
+    if harder:
+        sta_assign.extend([
+            #[[b'\xa2', char, b'\x86'], 1],  # LDX Immediate, STX Zero Page
+            #[[b'\xa0', char, b'\x84'], 1],  # LDY Immediate, STY Zero Page
+            [[0xA0, ord(char), 0x8C], 1],   # LDY Immediate, STY Absolute
+            [[0xA2, ord(char), 0x8E], 1],   # LDX Immediate, STX Absolute
     ])
-    rom.seek(header['offset'], os.SEEK_SET)
-    for b in range(16384 * header['prg_banks']):
-        buffer.append(rom.read(1))
-        if len(buffer) > 16:
-            buffer.pop(0)
-        for T, offset in targets:
-            if T == buffer[-len(T):]:
-                codes.add(addr_data_to_code((b % 65536) - offset, write,
-                    ord(char) if not short else False))
+
+    codes = set()
+    for addr in _find_code_in_rom(rom_path, sta_assign):
+        if check_dec:
+            for code, _ in dec_memory(addr):
+                if code in _read_rom(rom_path):
+                    break
+            else:
+                # None of the bytes-sequences are in the ROM
+                continue
+
+        codes.add(addr_data_to_code(addr, write,
+            ord(char) if not short else False))
 
     if len(codes) == 0 and not harder:
         return guess_based_on_char(char, rom_path, write, True)
 
     return codes
 
+@functools.lru_cache(maxsize=2)
+def _read_rom(rom_path):
+    header = _read_rom_header(rom_path)
+    with open(rom_path, 'rb') as rom:
+        rom.seek(header['offset'], os.SEEK_SET)
+        return rom.read()
+
+def _find_code_in_rom(rom_path, sought):
+    header = _read_rom_header(rom_path)
+    buffer = _read_rom(rom_path)
+    rom_end = 16384 * header['prg_banks']
+    sought = [[bytearray(T), offset] for T, offset in sought]
+
+    """
+    for bc, location in decompile(memoryview(buffer)[:rom_end], pc=0x7ffc):
+        if not bc:
+            continue
+        for T, offset in sought:
+            if memoryview(buffer)[location:location+len(T)] == T:
+                # NOTE: ROM is mapped at $8000-$FFFF, so offset
+                yield ((location + offset) & 0x7FFF) + 0x8000
+
+    return
+    """
+
+    for T, offset in sought:
+        start = 0
+        while True:
+            try:
+                location = buffer.index(T, start, rom_end)
+                start = location + 1
+                yield ((location + offset) & 0x7FFF) + 0x8000
+            except ValueError:
+                break
+
+
 import struct, os
-def _read_rom_header(header):
-    head = struct.unpack('BBBBBB', header[4:10])
-    trainer = head[2] & 0x04
-    return {
-        'prg_banks':     head[0],
-        'chr_banks':     head[1],
-        'offset':        16 + (512 if trainer else 0),
-    }
+@functools.lru_cache
+def _read_rom_header(rom_path):
+    with open(rom_path, 'rb') as rom:
+        header_bytes = rom.read(16)
+        head = struct.unpack('BBBBBB', header_bytes[4:10])
+        trainer = head[2] & 0x04
+        return {
+            'prg_banks':     head[0],
+            'chr_banks':     head[1],
+            'offset':        16 + (512 if trainer else 0),
+        }

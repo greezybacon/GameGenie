@@ -7,11 +7,12 @@ def do_RANDOM(args):
         print(random_code())
 
 def do_DETAIL(args):
-    addr, value, cmp = code_to_data_addr(args.code)
-    if cmp:
-        print(f"addr={hex(addr)}, value={value}, check={cmp}")
-    else:
-        print(f"addr={hex(addr)}, value={value}")
+    for code in args.code:
+        addr, value, cmp = code_to_data_addr(code)
+        if cmp:
+            print(f"{code} => addr={hex(addr)}, value={value}, check={cmp}")
+        else:
+            print(f"{code} => addr={hex(addr)}, value={value}")
 
 def do_CHANGE(args):
     addr, value, cmp = code_to_data_addr(args.code)
@@ -38,7 +39,8 @@ random.set_defaults(func=do_RANDOM)
 
 detail = commands.add_parser('info', aliases=['n'],
     help="Get info on code")
-detail.add_argument('code', help='6-character code to improve')
+detail.add_argument('code', help='6-character code to improve',
+    nargs='+')
 detail.set_defaults(func=do_DETAIL)
 
 
