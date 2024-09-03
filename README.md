@@ -1,7 +1,16 @@
 # GameGenie
 Python library for creating and improving Game Genie codes
 
-### Examples
+### CLI Interface
+
+Create a random 6-digit code
+
+```
+$ python3 -m genie random -n 1
+EOPGYI
+```
+
+### Python Interface
 
 Create a random 6-digit code
 
